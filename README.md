@@ -14,6 +14,7 @@ CipherA 128 is 128 bit hash algorithm
 |:------------|:------------:|:------------:|
 | CipherA 128      | 128 | 16          |
 | CipherA 256 | 256 | 24
+| CipherA 256 v2 | 256 | 32
 
 
 ### Developer
