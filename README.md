@@ -6,6 +6,7 @@
 |:------------|:------------:
 | CipherA 128      |  Stable          
 | CipherA 256      | Stable
+| ChipherA 256 v2 | Stable
 
 ### CipherA 128
 CipherA 128 is 128 bit hash algorithm
