@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstdint>
+#include <algorithm>
 
 inline uint32_t rotl32(uint32_t x, unsigned int r) {
     return (x << r) | (x >> (32 - r));
@@ -20,9 +21,14 @@ std::vector<uint8_t> pad_message(const std::string& input) {
     std::vector<uint8_t> out(input.begin(), input.end());
     uint64_t bit_len = (uint64_t)input.size() * 8ULL;
 
+    // append 1 bit
     out.push_back(0x80);
-    while ((out.size() % 4) != 0) out.push_back(0x00);
 
+    // pad until 56 mod 64
+    while ((out.size() % 64) != 56)
+        out.push_back(0x00);
+
+    // append length (little endian)
     for (int i = 0; i < 8; ++i)
         out.push_back((uint8_t)((bit_len >> (8 * i)) & 0xFF));
 
@@ -33,7 +39,6 @@ std::vector<uint8_t> pad_message(const std::string& input) {
 inline uint32_t F(uint32_t x, uint32_t y, uint32_t z) { return (x & y) | (~x & z); }
 inline uint32_t G(uint32_t x, uint32_t y, uint32_t z) { return (x & y) | (x & z) | (y & z); }
 inline uint32_t H(uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; }
-inline uint32_t I(uint32_t x, uint32_t y, uint32_t z) { return y ^ (x | ~z); }
 
 std::string to_hex256(const uint32_t s[8]) {
     std::stringstream ss;
@@ -61,41 +66,49 @@ std::string CipherA_256(const std::string& input) {
 
     std::vector<uint8_t> msg = pad_message(input);
 
-    for (size_t i = 0; i < msg.size(); i += 4) {
-        uint32_t block = le_bytes_to_u32(msg, i);
+    // Process 64-byte blocks
+    for (size_t i = 0; i < msg.size(); i += 64) {
 
-        for (int r = 0; r < 24; ++r) {
-            uint32_t t0 = rotl32(S[0] + F(S[1], S[2], S[3]) + block + RCON[r], (r % 11) + 1);
-            uint32_t t1 = rotl32(S[1] + G(S[2], S[3], S[4]) + block + RCON[(r+3)%24], (r % 13) + 1);
-            uint32_t t2 = rotl32(S[2] + H(S[3], S[4], S[5]) + block + RCON[(r+6)%24], (r % 17) + 1);
-            uint32_t t3 = rotl32(S[3] + I(S[4], S[5], S[6]) + block + RCON[(r+9)%24], (r % 19) + 1);
+        uint32_t M[16];
+        for (int j = 0; j < 16; ++j)
+            M[j] = le_bytes_to_u32(msg, i + j * 4);
 
-            uint32_t t4 = rotl32(S[4] ^ t0, (r % 7) + 1);
-            uint32_t t5 = rotl32(S[5] + t1, (r % 9) + 1);
-            uint32_t t6 = rotl32(S[6] ^ t2, (r % 13) + 1);
-            uint32_t t7 = rotl32(S[7] + t3, (r % 15) + 1);
+        // 32 compression rounds
+        for (int r = 0; r < 32; ++r) {
 
-            // diffusion
-            S[0] = t0 ^ (t5 >> 3);
-            S[1] = t1 ^ (t6 << 5);
-            S[2] = t2 ^ (t7 >> 7);
-            S[3] = t3 ^ (t4 << 11);
-            S[4] = t4 ^ (t1 >> 2);
-            S[5] = t5 ^ (t2 << 3);
-            S[6] = t6 ^ (t3 >> 5);
-            S[7] = t7 ^ (t0 << 7);
+            for (int j = 0; j < 8; ++j) {
+
+                uint32_t mix =
+                    F(S[(j+1)%8], S[(j+2)%8], S[(j+3)%8]) +
+                    G(S[(j+2)%8], S[(j+3)%8], S[(j+4)%8]) +
+                    H(S[(j+3)%8], S[(j+4)%8], S[(j+5)%8]);
+
+                uint32_t data = M[(r + j) % 16];
+
+                uint32_t temp = rotl32(
+                    S[j] + mix + data + RCON[(r + j) % 24],
+                    ((r * j) % 23) + 3
+                );
+
+                S[j] = temp ^ rotl32(S[(j+5)%8], (j+r)%17 + 1);
+            }
+
+            // state shuffle
+            std::swap(S[0], S[3]);
+            std::swap(S[1], S[6]);
+            std::swap(S[2], S[5]);
         }
 
-        // feed-forward
+        // Feed-forward (block dependent)
         for (int j = 0; j < 8; ++j)
-            S[j] ^= rotl32(block + RCON[j], j + 3);
+            S[j] += M[j];
     }
 
-    // final avalanche
-    for (int r = 0; r < 16; ++r) {
+    // Final avalanche phase
+    for (int r = 0; r < 24; ++r) {
         for (int j = 0; j < 8; ++j) {
-            S[j] += rotl32(S[(j+1)%8] ^ S[(j+3)%8], (r+j)%17 + 1);
-            S[j] ^= RCON[(r+j)%24];
+            S[j] ^= rotl32(S[(j+2)%8] + S[(j+5)%8], (r+j)%19 + 3);
+            S[j] += RCON[(r+j)%24];
         }
     }
 
@@ -104,11 +117,14 @@ std::string CipherA_256(const std::string& input) {
 
 int main() {
     std::string input;
-    std::cout << "CipherA-256\n";
+
+    std::cout << "CipherA-256 v2\n";
     std::cout << "Enter String: ";
     std::getline(std::cin, input);
 
     std::string hash = CipherA_256(input);
-    std::cout << "CipherA-256 Hash: " << hash << "\n";
+
+    std::cout << "CipherA-256 Hash:\n" << hash << "\n";
+
     return 0;
 }
